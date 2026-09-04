@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neso-aot"
+version = "0.1.0"
+description = "Metal and HLSL ahead-of-time compiler backend for Triton"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "triton==3.8.0",
+]
+
+[project.optional-dependencies]
+runtime = [
+    "numpy; sys_platform == 'darwin'",
+    "pyobjc-framework-Metal; sys_platform == 'darwin'",
+    "pyobjc-framework-MetalPerformanceShaders; sys_platform == 'darwin'",
+    "torch; sys_platform == 'darwin'",
+]
+test = [
+    "pytest",
+]
+
+[project.scripts]
+neso = "neso.aot_compile:main"
+
+[project.entry-points."triton.backends"]
+neso = "neso.backend"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# PyPI supplies Triton wheels on supported Linux platforms. There is no macOS
+# wheel, so uv builds the exact upstream revision used to develop this backend.
+[tool.uv.sources]
+triton = { git = "https://github.com/triton-lang/triton.git", rev = "4af25c84e8cd9672cac1ad2eb4301fe86f612c9a", marker = "sys_platform == 'darwin'" }
