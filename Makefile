@@ -17,7 +17,6 @@ SCRIPT_TESTS := \
 	tests/test_tile_ops.py \
 	$(sort $(wildcard tests/test_advanced*.py))
 BENCHMARKS ?= \
-	bench/bench_vs_mps.py \
 	bench/bench_matmul.py \
 	bench/bench_flash_attention.py
 
