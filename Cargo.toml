@@ -1,15 +1,26 @@
 [package]
-name = "neso-windows-harness"
+name = "neso-kernel-harness"
 version = "0.1.0"
 edition = "2021"
 publish = false
+
+[dependencies]
+half = "2.5"
 
 [[bin]]
 name = "neso-windows-kernels"
 path = "windows/harness.rs"
 
-[dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
 candle-d3d12-kernels = { git = "https://github.com/jacobgorm/candle", rev = "6029ddd825b625c93e0d20441e55db673902510b" }
+
+[[bin]]
+name = "neso-macos-kernels"
+path = "macos/harness.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-metal-kernels = { git = "https://github.com/jacobgorm/candle", rev = "6029ddd825b625c93e0d20441e55db673902510b" }
+objc2-metal = "0.3.2"
 
 [profile.release]
 lto = "thin"

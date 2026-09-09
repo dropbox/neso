@@ -22,11 +22,11 @@ BENCHMARKS ?= \
 	bench/bench_flash_attention.py
 
 INTEL_HOST ?= mac
-INTEL_REPO ?= triton
-INTEL_NESO_DIR ?= third_party/metal
-INTEL_PYTHON ?= env/bin/python
-INTEL_CORRECTNESS_TESTS ?= $(notdir $(SCRIPT_TESTS))
-INTEL_BENCHMARKS ?= bench_scalar_matmul.py
+INTEL_DIR ?= neso
+INTEL_TARGET ?= x86_64-apple-darwin
+INTEL_BINARY := target/$(INTEL_TARGET)/release/neso-macos-kernels
+MACOS_KERNEL_OUT ?= target/macos-kernels
+MACOS_BINARY := target/release/neso-macos-kernels
 WINDOWS_HOST ?= windows
 WINDOWS_DIR ?= neso
 WINDOWS_TARGET ?= x86_64-pc-windows-msvc
@@ -35,9 +35,10 @@ WINDOWS_BINARY := target/$(WINDOWS_TARGET)/release/neso-windows-kernels.exe
 DXC_PATH ?= ../directxshadercompiler/build-release/bin/dxc
 TRITON_CACHE_DIR ?= target/triton-cache
 
-.PHONY: install sync sync-dev test-compile test test-local correctness \
-	test-intel test-metal-targets windows-build test-windows test-win \
-	test-targets bench benchmark bench-intel benchmark-intel \
+.PHONY: install sync sync-dev test-compile test-python test test-local correctness \
+	macos-kernels macos-build macos-build-intel test-macos test-intel \
+	test-metal-targets windows-build test-windows test-win test-targets \
+	bench benchmark bench-macos bench-intel benchmark-intel \
 	bench-windows benchmark-windows bench-win bench-targets \
 	benchmark-targets lock
 
@@ -54,7 +55,7 @@ test-compile: sync-dev
 	$(UV) run --locked --python $(PYTHON) --extra test python -m pytest -s --tb=short \
 		$(PYTEST_TESTS)
 
-test: sync-dev
+test-python: sync-dev
 	@status=0; failed=""; \
 	echo "==> pytest kernel compilation tests"; \
 	$(UV) run --locked --python $(PYTHON) --extra test python -m pytest -s --tb=short \
@@ -66,16 +67,30 @@ test: sync-dev
 	if [ -n "$$failed" ]; then echo "FAILED suites:$$failed"; fi; \
 	exit $$status
 
-test-local correctness: test
+macos-kernels: install
+	TRITON_CACHE_DIR="$(TRITON_CACHE_DIR)" \
+		$(VENV_PYTHON) macos/build_kernels.py --out "$(MACOS_KERNEL_OUT)"
 
-test-intel:
-	ssh $(INTEL_HOST) 'cd $(INTEL_REPO) && set -eu; \
-		for test in $(INTEL_CORRECTNESS_TESTS); do \
-			echo "==> $(INTEL_NESO_DIR)/$$test"; \
-			$(INTEL_PYTHON) "$(INTEL_NESO_DIR)/$$test"; \
-		done'
+macos-build: macos-kernels
+	NESO_MACOS_KERNEL_DIR="$(abspath $(MACOS_KERNEL_OUT))" \
+		cargo build --locked --release --bin neso-macos-kernels
 
-test-metal-targets: test-local test-intel
+macos-build-intel: macos-kernels
+	NESO_MACOS_KERNEL_DIR="$(abspath $(MACOS_KERNEL_OUT))" \
+		cargo build --locked --release --target $(INTEL_TARGET) \
+		--bin neso-macos-kernels
+
+test-macos: macos-build
+	$(MACOS_BINARY) test
+
+test test-local correctness: test-macos test-python
+
+test-intel: macos-build-intel
+	ssh $(INTEL_HOST) 'mkdir -p $(INTEL_DIR)'
+	ecp $(INTEL_BINARY) $(INTEL_HOST):$(INTEL_DIR)/
+	ssh $(INTEL_HOST) 'cd $(INTEL_DIR) && ./neso-macos-kernels test'
+
+test-metal-targets: test-macos test-intel
 
 windows-build: install
 	DXC_PATH="$(DXC_PATH)" TRITON_CACHE_DIR="$(TRITON_CACHE_DIR)" \
@@ -99,19 +114,20 @@ bench benchmark: sync-dev
 		$(VENV_PYTHON) "$$benchmark"; \
 	done
 
-bench-intel benchmark-intel:
-	ssh $(INTEL_HOST) 'cd $(INTEL_REPO) && set -eu; \
-		for benchmark in $(INTEL_BENCHMARKS); do \
-			echo "==> $(INTEL_NESO_DIR)/$$benchmark"; \
-			$(INTEL_PYTHON) "$(INTEL_NESO_DIR)/$$benchmark"; \
-		done'
+bench-macos: macos-build
+	$(MACOS_BINARY) bench
+
+bench-intel benchmark-intel: macos-build-intel
+	ssh $(INTEL_HOST) 'mkdir -p $(INTEL_DIR)'
+	ecp $(INTEL_BINARY) $(INTEL_HOST):$(INTEL_DIR)/
+	ssh $(INTEL_HOST) 'cd $(INTEL_DIR) && ./neso-macos-kernels bench'
 
 bench-windows benchmark-windows bench-win: windows-build
 	ssh $(WINDOWS_HOST) 'mkdir -p $(WINDOWS_DIR)'
 	ecp $(WINDOWS_BINARY) $(WINDOWS_HOST):$(WINDOWS_DIR)/
 	ssh $(WINDOWS_HOST) 'cd $(WINDOWS_DIR) && ./neso-windows-kernels.exe bench'
 
-bench-targets benchmark-targets: bench bench-intel bench-windows
+bench-targets benchmark-targets: bench-macos bench-intel bench-windows
 
 lock:
 	$(UV) lock

@@ -40,10 +40,11 @@ Correctness targets:
 
 | Target | Purpose |
 | --- | --- |
-| `make test` | Run every kernel correctness test under `tests/`. |
+| `make test` | Run every Python kernel test plus the local Rust/Candle checks. |
 | `make test-compile` | Run platform-independent MSL/HLSL compilation tests. |
-| `make test-local` | Alias for `make test`. |
-| `make test-intel` | Run GPU correctness tests on the Intel Mac. |
+| `make test-macos` | Run the Rust/Candle kernel checks on the local Mac. |
+| `make test-local` | Run the Python suite and local Rust/Candle checks. |
+| `make test-intel` | Cross-build and run the Rust/Candle checks on the Intel Mac. |
 | `make test-windows` | Run kernel correctness tests on Windows. |
 | `make test-metal-targets` | Run the generic suite on both Metal targets. |
 | `make test-targets` | Run kernel correctness tests on every target machine. |
@@ -53,20 +54,27 @@ Benchmark targets:
 | Target | Purpose |
 | --- | --- |
 | `make bench` | Run the benchmark suite on the local Apple machine. |
-| `make bench-intel` | Run scalar benchmarks on the Intel Mac. |
+| `make bench-macos` | Run the Rust/Candle kernel benchmarks on the local Mac. |
+| `make bench-intel` | Cross-build and run the Rust/Candle benchmarks on the Intel Mac. |
 | `make bench-windows` | Run kernel benchmarks on Windows. |
 | `make bench-targets` | Run benchmarks on Apple Silicon, Intel, and Windows. |
 
-`make test` runs every suite even if one fails, then returns a nonzero status
-if any suite failed. Application-level and speech diagnostics live under
-`debug/` and are intentionally excluded.
+The Python phase of `make test` runs every suite under `tests/` even if one
+fails, then returns a nonzero status if any suite failed. Application-level and
+speech diagnostics live under `debug/` and are intentionally excluded.
 
-The Windows targets compile the small kernels in `windows/kernels.py` through
-Neso, compile the generated HLSL to DXIL, cross-build the local Rust harness,
-and copy only that executable to the Windows machine. The harness uses
-`candle-d3d12-kernels` directly; it has no model, asset, or application-level
-dependencies. Set `DXC_PATH`, `WINDOWS_HOST`, or `WINDOWS_DIR` to override the
-local defaults.
+The macOS and Windows harnesses exercise the same vector-add, scale, and Flash
+Attention 2 kernels with identical correctness inputs and benchmark sizes. The
+FA2 benchmark uses FP16 Q/K/V with FP32 accumulation and output, a head
+dimension of 64, and sequence lengths 128, 256, and 512; it reports median
+latency and effective GFLOP/s. Neso
+compiles the kernels to Metal libraries or DXIL, then Rust dispatches them
+through Candle's low-level Metal or D3D12 APIs. The Intel and Windows targets
+cross-build locally and copy only the executable to the target machine. They
+have no model, asset, speech, or application-level dependencies.
+
+Set `INTEL_HOST`, `INTEL_DIR`, `WINDOWS_HOST`, `WINDOWS_DIR`, or `DXC_PATH` to
+override the target and toolchain defaults.
 
 Compile a kernel from any platform with the installed command:
 
