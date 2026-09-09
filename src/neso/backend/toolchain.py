@@ -43,7 +43,15 @@ def compile_msl(msl_source: str) -> bytes:
         source_path.write_text(msl_source)
         try:
             subprocess.run(
-                [metal, "-c", os.fspath(source_path), "-o", os.fspath(air_path), "-std=metal3.1"],
+                [
+                    metal,
+                    "-c",
+                    os.fspath(source_path),
+                    "-o",
+                    os.fspath(air_path),
+                    "-std=metal3.1",
+                    "-ffast-math",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,

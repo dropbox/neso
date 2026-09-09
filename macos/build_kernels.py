@@ -23,7 +23,8 @@ KERNELS = {
     "vector_add": (vector_add, "*fp32, *fp32, *fp32, i32, 256"),
     "scale": (scale, "*fp32, *fp32, fp32, i32, 256"),
 }
-FA2_BLOCK_M = 8
+FA2_SIMD_BLOCK_M = 16
+FA2_SCALAR_BLOCK_M = 8
 FA2_BLOCK_N = 32
 FA2_HEAD_DIM = 64
 
@@ -58,12 +59,15 @@ def main() -> None:
         print(f"{name}: {compiled.threadgroup_size} threads, "
               f"{output.stat().st_size} byte metallib")
 
-    ttir = generate_fa2_ttir(
-        FA2_BLOCK_M, FA2_BLOCK_N, FA2_HEAD_DIM, qkv_dtype="f16"
-    )
-    for variant, use_simdgroup in (("simd", True), ("scalar", False)):
+    for variant, use_simdgroup, block_m in (
+        ("simd", True, FA2_SIMD_BLOCK_M),
+        ("scalar", False, FA2_SCALAR_BLOCK_M),
+    ):
+        ttir = generate_fa2_ttir(
+            block_m, FA2_BLOCK_N, FA2_HEAD_DIM, qkv_dtype="f16"
+        )
         msl, _, _, threads = ttir_to_msl_with_metadata(
-            ttir, block_size=256, use_simdgroup=use_simdgroup
+            ttir, block_size=block_m * FA2_BLOCK_N, use_simdgroup=use_simdgroup
         )
         output = args.out / f"flash_attention_fwd_{variant}.metallib"
         write_if_changed(output, compile_msl(msl))

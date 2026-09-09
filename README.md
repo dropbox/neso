@@ -66,7 +66,7 @@ speech diagnostics live under `debug/` and are intentionally excluded.
 The macOS and Windows harnesses exercise the same vector-add, scale, and Flash
 Attention 2 kernels with identical correctness inputs and benchmark sizes. The
 FA2 benchmark uses FP16 Q/K/V with FP32 accumulation and output, a head
-dimension of 64, and sequence lengths 128, 256, and 512; it reports median
+dimension of 64, and sequence lengths 128, 256, 512, 1024, and 2048; it reports median
 latency and effective GFLOP/s. Neso
 compiles the kernels to Metal libraries or DXIL, then Rust dispatches them
 through Candle's low-level Metal or D3D12 APIs. The Intel and Windows targets

@@ -273,14 +273,14 @@ mod windows_harness {
             scale_gbps
         );
 
-        let max_sequence_length = 512;
+        let max_sequence_length = 2048;
         let buffer_count = max_sequence_length * FA2_HEAD_DIM;
         let (q, k, v) = fa2_values(max_sequence_length);
         let q = upload_f16(&gpu, &q)?;
         let k = upload_f16(&gpu, &k)?;
         let v = upload_f16(&gpu, &v)?;
         let fa2_output = gpu.create_buffer((buffer_count * 4) as u64)?;
-        for sequence_length in [128usize, 256, 512] {
+        for sequence_length in [128usize, 256, 512, 1024, 2048] {
             let fa2_time = measure(
                 || {
                     dispatch_fa2(

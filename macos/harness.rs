@@ -5,17 +5,20 @@ mod macos_harness {
     };
     use candle_metal_kernels::RESOURCE_OPTIONS;
     use half::f16;
-    use objc2_metal::MTLSize;
+    use objc2_metal::{MTLCommandBuffer, MTLSize};
     use std::error::Error;
     use std::ffi::c_void;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const BLOCK_SIZE: usize = 256;
+    #[cfg(target_arch = "aarch64")]
+    const FA2_BLOCK_M: usize = 16;
+    #[cfg(target_arch = "x86_64")]
     const FA2_BLOCK_M: usize = 8;
     const FA2_HEAD_DIM: usize = 64;
     #[cfg(target_arch = "aarch64")]
-    const FA2_THREADS: usize = 256;
+    const FA2_THREADS: usize = 512;
     #[cfg(target_arch = "x86_64")]
     const FA2_THREADS: usize = 416;
     const VECTOR_ADD_METALLIB: &[u8] = include_bytes!(concat!(
@@ -82,7 +85,7 @@ mod macos_harness {
         scalars: &[(usize, &[u8])],
         grid_x: usize,
         threads_per_group: usize,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Duration, Box<dyn Error>> {
         let command_buffer = create_command_buffer(queue, Arc::new(CommandSemaphore::new()))?;
         {
             let encoder = command_buffer.compute_command_encoder();
@@ -111,7 +114,10 @@ mod macos_harness {
         if let Some(error) = command_buffer.error() {
             return Err(error.into_owned().into());
         }
-        Ok(())
+        let raw = command_buffer.as_ref();
+        Ok(Duration::from_secs_f64(
+            raw.GPUEndTime() - raw.GPUStartTime(),
+        ))
     }
 
     fn dispatch_fa2(
@@ -122,7 +128,7 @@ mod macos_harness {
         v: &Buffer,
         output: &Buffer,
         sequence_length: usize,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Duration, Box<dyn Error>> {
         let n = (sequence_length as i32).to_ne_bytes();
         let stride = (FA2_HEAD_DIM as i32).to_ne_bytes();
         let scale = (1.0 / (FA2_HEAD_DIM as f32).sqrt()).to_ne_bytes();
@@ -246,17 +252,15 @@ mod macos_harness {
     }
 
     fn measure(
-        mut dispatch: impl FnMut() -> Result<(), Box<dyn Error>>,
+        mut dispatch: impl FnMut() -> Result<Duration, Box<dyn Error>>,
         iterations: usize,
     ) -> Result<Duration, Box<dyn Error>> {
         for _ in 0..10 {
-            dispatch()?;
+            let _ = dispatch()?;
         }
         let mut samples = Vec::with_capacity(iterations);
         for _ in 0..iterations {
-            let start = Instant::now();
-            dispatch()?;
-            samples.push(start.elapsed());
+            samples.push(dispatch()?);
         }
         Ok(median(samples))
     }
@@ -313,13 +317,13 @@ mod macos_harness {
             count as f64 * 8.0 / scale_time.as_secs_f64() / 1e9
         );
 
-        let max_sequence_length = 512;
+        let max_sequence_length = 2048;
         let (q, k, v) = fa2_values(max_sequence_length);
         let q = upload_f16(&device, &q)?;
         let k = upload_f16(&device, &k)?;
         let v = upload_f16(&device, &v)?;
         let fa2_output = allocate(&device, max_sequence_length * FA2_HEAD_DIM)?;
-        for sequence_length in [128usize, 256, 512] {
+        for sequence_length in [128usize, 256, 512, 1024, 2048] {
             let fa2_time = measure(
                 || dispatch_fa2(&queue, &fa2, &q, &k, &v, &fa2_output, sequence_length),
                 20,
