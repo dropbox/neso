@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from neso.backend.codegen import ttir_to_hlsl, ttir_to_hlsl_with_metadata, ttir_to_msl
 from neso.backend.codegen.analysis import build_op_map, compute_liveness
 from neso.backend.codegen.hlsl_emitter import HLSLEmitter
-from neso.backend.codegen.ir import Op
+from neso.backend.codegen.ir import Op, TType
 from neso.backend.codegen.lowering import TritonLowering
 from neso.backend.codegen.mlir_walker import walk_module_from_text
 from neso.backend.codegen.model import UnsupportedOperationError
@@ -117,8 +117,28 @@ def test_parser():
     assert 'tt.load' in op_names, f"Missing tt.load in {op_names}"
     assert 'arith.addf' in op_names, f"Missing arith.addf in {op_names}"
     assert 'tt.store' in op_names, f"Missing tt.store in {op_names}"
-
     print("  Parser test passed!")
+
+
+def test_cast_barrier_deferred_until_intervening_tile_load():
+    """Independent cast/load writes should share the load's barrier."""
+    cast = Op(
+        results=['%p16'], opname='arith.truncf', operands=['%p32'], attrs={},
+        type_str='', result_types=[TType(dtype='f16', shape=[16, 32])],
+    )
+    load = Op(
+        results=['%v'], opname='tt.load', operands=['%v_ptr'], attrs={},
+        type_str='', result_types=[TType(dtype='f16', shape=[32, 64])],
+    )
+    dot = Op(
+        results=['%o'], opname='tt.dot', operands=['%p16', '%v', '%acc'],
+        attrs={}, type_str='',
+        result_types=[TType(dtype='f32', shape=[16, 64])],
+    )
+
+    deferred = TritonLowering._find_deferred_cast_barriers([cast, load, dot])
+    assert deferred == {'%p16'}
+    assert TritonLowering._find_deferred_cast_barriers([cast, dot, load]) == set()
 
 
 def test_add_kernel():

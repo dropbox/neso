@@ -99,6 +99,8 @@ class TritonLowering:
         # --- Register accumulator cast store ---
         self._reg_acc_cast_dtype: dict[str, str] = {}  # SSA name -> target dtype for cast store
         self._cast_scratch_name: str | None = None   # shared_name for per-SG cast scratch buffer
+        # Cast writes that a later cooperative load can synchronize.
+        self._deferred_cast_barriers: set[str] = set()
         # --- Index expression tracking (for broadcast materialization) ---
         # Maps SSA name -> (base_expr, start) such that value at position i = base_expr + (i + start)
         self._index_exprs: dict[str, tuple[str, int]] = {}
@@ -1111,6 +1113,7 @@ class TritonLowering:
         # Build op map for operand tracing + flat list (includes void ops like tt.store)
         self._op_map = build_op_map(ops)
         self._all_ops = flatten_ops(ops)
+        self._deferred_cast_barriers = self._find_deferred_cast_barriers(ops)
 
         # Detect 2D block shape from tt.dot
         self.block_shape = self._detect_block_shape(ops)
@@ -1222,6 +1225,36 @@ class TritonLowering:
                 global_decls = '\n'.join(shared_lines) + '\n\n'
 
         return f"{file_header}\n{global_decls}{header}\n{body}\n}}\n"
+
+    @classmethod
+    def _find_deferred_cast_barriers(cls, ops: list[Op]) -> set[str]:
+        """Find cast writes synchronized by a cooperative load before use.
+
+        For example, FA2 writes a converted P tile, loads V into a different
+        tile, and then consumes both in a dot. The load's barrier makes both
+        writes visible, so a separate barrier after the conversion is wasted.
+        """
+        deferred: set[str] = set()
+        for index, op in enumerate(ops):
+            if op.opname == 'arith.truncf' and len(op.results) == 1:
+                result = op.results[0]
+                saw_2d_load = False
+                for later in ops[index + 1:]:
+                    if later.opname == 'tt.load' and any(
+                            result_type.rank == 2
+                            for result_type in later.result_types):
+                        saw_2d_load = True
+                    if result in later.operands:
+                        if saw_2d_load and later.opname == 'tt.dot':
+                            deferred.add(result)
+                        break
+                    if later.body_ops or later.else_ops:
+                        break
+            if op.body_ops:
+                deferred.update(cls._find_deferred_cast_barriers(op.body_ops))
+            if op.else_ops:
+                deferred.update(cls._find_deferred_cast_barriers(op.else_ops))
+        return deferred
 
     @staticmethod
     def _find_dead_tiles(shared_lines: list[str], body_lines: list[str]) -> set[str]:
@@ -3951,7 +3984,8 @@ class TritonLowering:
             src_tile = self._get_tile(src)
             out_tile = self._alloc_tile(src_tile.shape, result_type.dtype)
             self._emit_tile_loop(out_tile.total,
-                f"{out_tile.shared_name}[_fi] = ({target_type}){self._tile_read(src_tile, '_fi')};")
+                f"{out_tile.shared_name}[_fi] = ({target_type}){self._tile_read(src_tile, '_fi')};",
+                needs_barrier=result not in self._deferred_cast_barriers)
             self._register_tile(result, out_tile)
             return
 
