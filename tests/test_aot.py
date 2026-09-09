@@ -312,6 +312,18 @@ def test_invalid_target_is_rejected():
         compile_kernel(add_kernel, "*fp32, *fp32, *fp32, i32, 1024", target="neso:2")
 
 
+def test_jit_runtime_options_are_accepted():
+    """Keep Neso's option schema in sync with options injected by Triton JIT."""
+    from neso.backend.compiler import NesoBackend
+
+    options = NesoBackend.parse_options(None, {
+        "launch_cooperative_grid": True,
+        "fpsan_homomorphic_casts": True,
+    })
+    assert options.launch_cooperative_grid is True
+    assert options.fpsan_homomorphic_casts is True
+
+
 def test_required_metallib_reports_missing_toolchain(monkeypatch):
     from neso import aot_compile
     from neso.backend.toolchain import MetalToolchainUnavailable
@@ -328,8 +340,23 @@ def test_required_metallib_reports_missing_toolchain(monkeypatch):
         )
 
 
+def test_metallib_emission_can_be_disabled(monkeypatch):
+    from neso import aot_compile
+
+    def unexpected(_source):
+        raise AssertionError("Metal compiler should not run for a Windows-only build")
+
+    monkeypatch.setattr(aot_compile, "compile_msl", unexpected)
+    result = aot_compile.compile_kernel(
+        add_kernel,
+        "*fp32, *fp32, *fp32, i32, 1024",
+        emit_metallib=False,
+    )
+    assert result.metallib_bytes is None
+
+
 def test_matmul_save_and_inspect():
-    """Full end-to-end: compile matmul, save, and inspect metadata."""
+    """Compile a matmul kernel, then validate its saved AOT metadata."""
     from neso.aot_compile import compile_kernel
 
     result = compile_kernel(
@@ -364,4 +391,4 @@ def test_matmul_save_and_inspect():
         for p in meta['params']:
             print(f"      encoder.setBuffer(buf_{p['name']}, offset: 0, index: {p['index']})")
 
-    print("  PASS: matmul end-to-end save and inspect")
+    print("  PASS: matmul AOT artifacts saved and inspected")

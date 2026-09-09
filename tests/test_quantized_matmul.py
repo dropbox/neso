@@ -120,7 +120,7 @@ def generate_w8a16_ttir(M, N, K, BM, BN, BK):
         %b_ptrs_init = tt.addptr %b_base_splat, %idx_b : tensor<{BK}x{BN}x!tt.ptr<i8>>, tensor<{BK}x{BN}xi32>
 
         // K-loop with pointer iter_args
-        %result:3 = scf.for %iv = %c0 to %K_param step %cBK iter_args(%acc = %acc_init, %a_ptrs = %a_ptrs_init, %b_ptrs = %b_ptrs_init) -> (tensor<{BM}x{BN}xf32>, tensor<{BM}x{BK}x!tt.ptr<f16>>, tensor<{BK}x{BN}x!tt.ptr<i8>>) {{
+        %result:3 = scf.for %iv = %c0 to %K_param step %cBK iter_args(%acc = %acc_init, %a_ptrs = %a_ptrs_init, %b_ptrs = %b_ptrs_init) -> (tensor<{BM}x{BN}xf32>, tensor<{BM}x{BK}x!tt.ptr<f16>>, tensor<{BK}x{BN}x!tt.ptr<i8>>) : i32 {{
 
           // Load tiles
           %a_tile = tt.load %a_ptrs : tensor<{BM}x{BK}x!tt.ptr<f16>>
@@ -233,7 +233,7 @@ def generate_w8a16_scaled_ttir(M, N, K, BM, BN, BK):
         %b_ptrs_init = tt.addptr %b_base_splat, %idx_b : tensor<{BK}x{BN}x!tt.ptr<i8>>, tensor<{BK}x{BN}xi32>
 
         // K-loop
-        %result:3 = scf.for %iv = %c0 to %K_param step %cBK iter_args(%acc = %acc_init, %a_ptrs = %a_ptrs_init, %b_ptrs = %b_ptrs_init) -> (tensor<{BM}x{BN}xf32>, tensor<{BM}x{BK}x!tt.ptr<f16>>, tensor<{BK}x{BN}x!tt.ptr<i8>>) {{
+        %result:3 = scf.for %iv = %c0 to %K_param step %cBK iter_args(%acc = %acc_init, %a_ptrs = %a_ptrs_init, %b_ptrs = %b_ptrs_init) -> (tensor<{BM}x{BN}xf32>, tensor<{BM}x{BK}x!tt.ptr<f16>>, tensor<{BK}x{BN}x!tt.ptr<i8>>) : i32 {{
           %a_tile = tt.load %a_ptrs : tensor<{BM}x{BK}x!tt.ptr<f16>>
           %b_i8 = tt.load %b_ptrs : tensor<{BK}x{BN}x!tt.ptr<i8>>
           %b_f16 = arith.sitofp %b_i8 : tensor<{BK}x{BN}xi8> to tensor<{BK}x{BN}xf16>

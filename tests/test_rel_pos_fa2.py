@@ -193,7 +193,7 @@ def generate_rel_pos_fa2_ttir(BM, BN, d):
             -> (tensor<{BM}xf32>, tensor<{BM}xf32>, tensor<{BM}x{d}xf32>) : i32 {{
 
           {k_load}
-          %KT = tt.trans {k_ssa} : tensor<{BN}x{d}x{dt}> -> tensor<{d}x{BN}x{dt}>
+          %KT = tt.trans {k_ssa} {{order = array<i32: 1, 0>}} : tensor<{BN}x{d}x{dt}> -> tensor<{d}x{BN}x{dt}>
 
           // Content scores: Q @ K^T
           %zero_qk = arith.constant dense<0.000000e+00> : tensor<{BM}x{BN}xf32>
@@ -206,7 +206,11 @@ def generate_rel_pos_fa2_ttir(BM, BN, d):
           %scores = arith.mulf %QK_plus_bias, %scale_splat : tensor<{BM}x{BN}xf32>
 
           // Online softmax
-          %row_max = tt.reduce %scores {{axis = 1 : i32, reduce_op = "max"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+          %row_max = "tt.reduce"(%scores) <{{axis = 1 : i32}}> ({{
+          ^bb0(%lhs: f32, %rhs: f32):
+            %max = arith.maxnumf %lhs, %rhs : f32
+            tt.reduce.return %max : f32
+          }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
           %m_new = arith.maximumf %m_i, %row_max : tensor<{BM}xf32>
           %diff_m = arith.subf %m_i, %m_new : tensor<{BM}xf32>
           %alpha = math.exp %diff_m : tensor<{BM}xf32>
@@ -214,7 +218,11 @@ def generate_rel_pos_fa2_ttir(BM, BN, d):
           %m_new_bc = tt.broadcast %m_new_exp : tensor<{BM}x1xf32> -> tensor<{BM}x{BN}xf32>
           %qk_shifted = arith.subf %scores, %m_new_bc : tensor<{BM}x{BN}xf32>
           %P = math.exp %qk_shifted : tensor<{BM}x{BN}xf32>
-          %row_sum = tt.reduce %P {{axis = 1 : i32, reduce_op = "add"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+          %row_sum = "tt.reduce"(%P) <{{axis = 1 : i32}}> ({{
+          ^bb0(%lhs: f32, %rhs: f32):
+            %sum = arith.addf %lhs, %rhs : f32
+            tt.reduce.return %sum : f32
+          }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
           %l_scaled = arith.mulf %l_i, %alpha : tensor<{BM}xf32>
           %l_new = arith.addf %l_scaled, %row_sum : tensor<{BM}xf32>
 
@@ -443,6 +451,10 @@ if __name__ == "__main__":
     if not all_ok:
         print("\nSome tests failed!")
         sys.exit(1)
+
+    if "test" in sys.argv:
+        print("\nAll tests passed!")
+        sys.exit(0)
 
     print()
     print("=== Multi-Head FA2 Performance (Parakeet: d=128, nh=8) ===")

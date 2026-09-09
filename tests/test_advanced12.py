@@ -19,7 +19,7 @@ torch.mps.synchronize()
 # 1. W8A16 dequant matmul: fp16 activations * int8 weights (per-tensor scale)
 @triton.jit
 def w8a16_matmul_kernel(
-    a_ptr, b_int8_ptr, scale_ptr, c_ptr,
+    a_ptr, b_int8_ptr, c_ptr, scale_ptr,
     M, N, K,
     stride_am, stride_ak,
     stride_bk, stride_bn,
@@ -39,14 +39,13 @@ def w8a16_matmul_kernel(
     b_ptrs = b_int8_ptr + (offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn)
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_K):
-        a = tl.load(a_ptrs).to(tl.float32)
-        b_raw = tl.load(b_ptrs).to(tl.float32)
-        b = b_raw * scale
+        a = tl.load(a_ptrs)
+        b = tl.load(b_ptrs).to(tl.float16)
         acc += tl.dot(a, b)
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
     c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
-    tl.store(c_ptrs, acc)
+    tl.store(c_ptrs, acc * scale)
 
 
 # 2. Per-channel dequantization (each output channel has its own scale+zero)
@@ -182,18 +181,18 @@ def rope_kernel(x_ptr, cos_ptr, sin_ptr, out_ptr, seq_len, head_dim,
 
 def test_w8a16_matmul():
     M, N, K = 32, 32, 32
-    a = torch.randn(M, K, device='mps', dtype=torch.float32)
+    a = torch.randn(M, K, device='mps', dtype=torch.float16)
     # Simulate int8 weights (stored as int32 for Metal compatibility)
     b_int8 = torch.randint(-128, 127, (K, N), device='mps', dtype=torch.int32)
     scale = torch.tensor([0.01], device='mps', dtype=torch.float32)
     c = torch.zeros(M, N, device='mps')
     grid = (1, 1)
-    w8a16_matmul_kernel[grid](a, b_int8, scale, c, M, N, K,
+    w8a16_matmul_kernel[grid](a, b_int8, c, scale, M, N, K,
                                a.stride(0), a.stride(1),
                                b_int8.stride(0), b_int8.stride(1),
                                c.stride(0), c.stride(1),
                                BLOCK_M=32, BLOCK_N=32, BLOCK_K=32)
-    ref = a @ (b_int8.float() * 0.01)
+    ref = a.float() @ (b_int8.float() * 0.01)
     err = (c - ref).abs().max().item()
     return err < 0.5, err
 

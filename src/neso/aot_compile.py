@@ -129,6 +129,7 @@ def compile_kernel(
     grid: list[str] | None = None,
     target: str | None = None,
     require_metallib: bool = False,
+    emit_metallib: bool = True,
 ) -> AOTResult:
     """Compile a @triton.jit kernel to Metal AOT artifacts.
 
@@ -142,6 +143,7 @@ def compile_kernel(
         grid: Grid dimensions as list of strings, e.g. ["cdiv(M,128)", "cdiv(N,128)", "1"]
         target: Target string "neso:arch:warp_size" (default: auto-detect)
         require_metallib: Fail if the offline Metal toolchain is unavailable
+        emit_metallib: Attempt to compile MSL to a metallib when true
 
     Returns:
         AOTResult with all compilation artifacts
@@ -189,12 +191,15 @@ def compile_kernel(
 
     # Extract artifacts
     msl_source = compiled.asm.get("msl", "")
-    try:
-        metallib_bytes = compile_msl(msl_source)
-    except MetalToolchainUnavailable:
-        if require_metallib:
-            raise
-        metallib_bytes = None
+    if require_metallib and not emit_metallib:
+        raise ValueError("require_metallib=True requires emit_metallib=True")
+    metallib_bytes = None
+    if emit_metallib:
+        try:
+            metallib_bytes = compile_msl(msl_source)
+        except MetalToolchainUnavailable:
+            if require_metallib:
+                raise
 
     # Get TTIR and TTGIR text
     ttir_obj = compiled.asm.get("ttir", "")

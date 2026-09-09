@@ -24,6 +24,7 @@ class NesoOptions:
     num_warps: int = 4  # maps to SIMD groups
     num_stages: int = 1
     num_ctas: int = 1
+    launch_cooperative_grid: bool = False
     # Apple GPU SIMD width is 32 on all current Apple Silicon
     warp_size: int = 32
     # Threads per threadgroup (block size)
@@ -39,6 +40,7 @@ class NesoOptions:
     max_num_imprecise_acc_default: int = 0
     extern_libs: tuple[tuple[str, str], ...] | dict[str, str] = ()
     instrumentation_mode: str = ""
+    fpsan_homomorphic_casts: bool = False
 
     def __post_init__(self):
         if isinstance(self.extern_libs, dict):

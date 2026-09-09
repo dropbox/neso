@@ -1,0 +1,15 @@
+[package]
+name = "neso-windows-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "neso-windows-kernels"
+path = "windows/harness.rs"
+
+[dependencies]
+candle-d3d12-kernels = { git = "https://github.com/jacobgorm/candle", rev = "6029ddd825b625c93e0d20441e55db673902510b" }
+
+[profile.release]
+lto = "thin"

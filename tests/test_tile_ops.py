@@ -105,7 +105,11 @@ def test_2d_softmax():
         %x = tt.load %in_ptrs : tensor<{BM}x{BN}x!tt.ptr<f32>>
 
         // Row-wise max: [BM, BN] -> [BM]
-        %row_max = tt.reduce %x {{axis = 1 : i32, reduce_op = "max"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+        %row_max = "tt.reduce"(%x) <{{axis = 1 : i32}}> ({{
+        ^bb0(%lhs: f32, %rhs: f32):
+          %max = arith.maxnumf %lhs, %rhs : f32
+          tt.reduce.return %max : f32
+        }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
 
         // Broadcast max back: [BM] -> [BM, 1] -> [BM, BN]
         %max_exp = tt.expand_dims %row_max {{axis = 1 : i32}} : tensor<{BM}xf32> -> tensor<{BM}x1xf32>
@@ -118,7 +122,11 @@ def test_2d_softmax():
         %ex = math.exp %shifted : tensor<{BM}x{BN}xf32>
 
         // Row-wise sum: [BM, BN] -> [BM]
-        %row_sum = tt.reduce %ex {{axis = 1 : i32, reduce_op = "add"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+        %row_sum = "tt.reduce"(%ex) <{{axis = 1 : i32}}> ({{
+        ^bb0(%lhs: f32, %rhs: f32):
+          %sum = arith.addf %lhs, %rhs : f32
+          tt.reduce.return %sum : f32
+        }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
 
         // Broadcast sum: [BM] -> [BM, BN]
         %sum_exp = tt.expand_dims %row_sum {{axis = 1 : i32}} : tensor<{BM}xf32> -> tensor<{BM}x1xf32>
@@ -231,7 +239,7 @@ def test_transpose_dot():
         %K = tt.load %k_ptrs : tensor<{BN}x{BK}x!tt.ptr<f32>>
 
         // -- Transpose K: [BN, BK] -> [BK, BN] --
-        %KT = tt.trans %K : tensor<{BN}x{BK}xf32> -> tensor<{BK}x{BN}xf32>
+        %KT = tt.trans %K {{order = array<i32: 1, 0>}} : tensor<{BN}x{BK}xf32> -> tensor<{BK}x{BN}xf32>
 
         // -- Dot: Q[BM, BK] @ K^T[BK, BN] -> C[BM, BN] --
         %zero = arith.constant dense<0.000000e+00> : tensor<{BM}x{BN}xf32>

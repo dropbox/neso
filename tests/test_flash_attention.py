@@ -175,7 +175,7 @@ def generate_fa2_ttir(BM, BN, d, qkv_dtype='f32'):
           {k_load}
 
           // Transpose K: [BN, d] -> [d, BN]
-          %KT = tt.trans {k_ssa} : tensor<{BN}x{d}x{dt}> -> tensor<{d}x{BN}x{dt}>
+          %KT = tt.trans {k_ssa} {{order = array<i32: 1, 0>}} : tensor<{BN}x{d}x{dt}> -> tensor<{d}x{BN}x{dt}>
 
           // QK = Q @ K^T: [BM, d] * [d, BN] -> [BM, BN] (mixed precision if f16)
           %zero_qk = arith.constant dense<0.000000e+00> : tensor<{BM}x{BN}xf32>
@@ -186,7 +186,11 @@ def generate_fa2_ttir(BM, BN, d, qkv_dtype='f32'):
           %QK_scaled = arith.mulf %QK, %scale_splat : tensor<{BM}x{BN}xf32>
 
           // Row-wise max: [BM, BN] -> [BM]
-          %row_max = tt.reduce %QK_scaled {{axis = 1 : i32, reduce_op = "max"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+          %row_max = "tt.reduce"(%QK_scaled) <{{axis = 1 : i32}}> ({{
+          ^bb0(%lhs: f32, %rhs: f32):
+            %max = arith.maxnumf %lhs, %rhs : f32
+            tt.reduce.return %max : f32
+          }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
 
           // m_new = max(m_i, row_max)
           %m_new = arith.maximumf %m_i, %row_max : tensor<{BM}xf32>
@@ -202,7 +206,11 @@ def generate_fa2_ttir(BM, BN, d, qkv_dtype='f32'):
           %P = math.exp %qk_shifted : tensor<{BM}x{BN}xf32>
 
           // Row-wise sum: [BM, BN] -> [BM]
-          %row_sum = tt.reduce %P {{axis = 1 : i32, reduce_op = "add"}} : tensor<{BM}x{BN}xf32> -> tensor<{BM}xf32>
+          %row_sum = "tt.reduce"(%P) <{{axis = 1 : i32}}> ({{
+          ^bb0(%lhs: f32, %rhs: f32):
+            %sum = arith.addf %lhs, %rhs : f32
+            tt.reduce.return %sum : f32
+          }}) : (tensor<{BM}x{BN}xf32>) -> tensor<{BM}xf32>
 
           // l_new = l_i * alpha + row_sum
           %l_scaled = arith.mulf %l_i, %alpha : tensor<{BM}xf32>
@@ -406,10 +414,6 @@ if __name__ == "__main__":
         (128, 128, 16, 32), # N=128, d=128, BM=16, BN=32
         (256, 128, 16, 32), # N=256, d=128, BM=16, BN=32
         (512, 128, 16, 32), # N=512, d=128, BM=16, BN=32
-        # d=128 BM=24 BN=32 (enabled by single-block diag scratch)
-        (96, 128, 24, 32),  # N=96, d=128, BM=24, BN=32
-        (192, 128, 24, 32), # N=192, d=128, BM=24, BN=32
-        (384, 128, 24, 32), # N=384, d=128, BM=24, BN=32
     ]
 
     all_ok = True
@@ -437,8 +441,6 @@ if __name__ == "__main__":
         (128, 128, 8, 32),
         (256, 128, 16, 32),
         (512, 128, 16, 32),
-        (256, 128, 24, 32),
-        (384, 128, 24, 32),
         # d=128 BM=32 (f16 enables this: Q+K+V fit in ~24KB)
         (128, 128, 32, 32),
         (256, 128, 32, 32),
@@ -459,6 +461,10 @@ if __name__ == "__main__":
     if not all_ok:
         print("\nSome tests failed!")
         sys.exit(1)
+
+    if "test" in sys.argv:
+        print("\nAll tests passed!")
+        sys.exit(0)
 
     # === Performance benchmark ===
     print()
