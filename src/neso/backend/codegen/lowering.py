@@ -1377,7 +1377,9 @@ class TritonLowering:
         When BN ≤ 32 (SIMD width), fuses all into a single per-row pass
         that eliminates ~4 barriers.  Returns number of ops consumed (11 or 0).
         """
-        if idx + 10 >= len(ops) or not self.emitter.supports_simd_matrix():
+        if (idx + 10 >= len(ops)
+                or not self.emitter.supports_wave_reduce()
+                or self.emitter.wave_lane_count_expr() != "32u"):
             return 0
 
         # --- Match pattern ---
@@ -1512,7 +1514,9 @@ class TritonLowering:
             self._emit(f"    {metal_type} _qk = {qk_read};")
         else:
             self._emit(f"    {metal_type} _qk = ({lane_var} < {BN}u) ? {qk_read} : (-({metal_type})HUGE_VALF);")
-        self._emit(f"    {metal_type} _rmax = simd_max(_qk);")
+        self._emit(
+            f"    {metal_type} _rmax = "
+            f"{self.emitter.simd_reduce('max', '_qk')};")
 
         # Step 2: m_new = max(m_old, row_max), alpha = exp(m_old - m_new)
         self._emit(f"    {metal_type} _m_old = {m_i_tile.shared_name}[{row_var}];")
@@ -1523,11 +1527,15 @@ class TritonLowering:
         if BN == 32:
             self._emit(f"    {metal_type} _p = exp(_qk - _m_new);")
             self._emit(f"    {qk_tile.shared_name}[{row_var} * {BN}u + {lane_var}] = _p;")
-            self._emit(f"    {metal_type} _rsum = simd_sum(_p);")
+            self._emit(
+                f"    {metal_type} _rsum = "
+                f"{self.emitter.simd_reduce('sum', '_p')};")
         else:
             self._emit(f"    {metal_type} _p = ({lane_var} < {BN}u) ? exp(_qk - _m_new) : ({metal_type})0;")
             self._emit(f"    if ({lane_var} < {BN}u) {qk_tile.shared_name}[{row_var} * {BN}u + {lane_var}] = _p;")
-            self._emit(f"    {metal_type} _rsum = simd_sum(_p);")
+            self._emit(
+                f"    {metal_type} _rsum = "
+                f"{self.emitter.simd_reduce('sum', '_p')};")
 
         # Step 4: l_new = l_old * alpha + row_sum; write all outputs
         self._emit(f"    if ({lane_var} == 0u) {{")
@@ -1811,6 +1819,10 @@ class TritonLowering:
             else:
                 self._emit(f"int {var} = (int){tid} + {start};")
             self._set_val(result, ttype, var)
+            # Preserve the per-element range expression only when the physical
+            # thread count is smaller than the logical tensor extent.
+            if self._needs_cooperative_loads():
+                self._index_exprs[result] = ("0", start)
 
     def _gen_tt_splat(self, op: Op):
         src = op.operands[0]
@@ -3430,17 +3442,55 @@ class TritonLowering:
         else:
             b_elem = f"{b_tile.shared_name}[{{kk}} * {BN}u + _cc]"
 
+        # MSL scalar fallback: use aligned float4 accesses when both the input
+        # and accumulator are f32. For Q @ K^T, vectorize the K reduction. For
+        # P @ V, let each thread accumulate four adjacent output columns so
+        # the V loads are contiguous and the P value is reused four times.
+        can_vec4 = (in_type == 'float' and acc_type == 'float'
+                    and self.emitter.supports_ptr_cast())
+        if can_vec4 and b_transposed and BK % 4 == 0:
+            kk = self._fresh_var("dk4")
+            acc = self._fresh_var("acc")
+            self._emit(f"for (uint _fi = (uint){tid}; _fi < {C_ELEMS}u; _fi += _tg_size.x) {{")
+            self._emit(f"    uint _cr = _fi / {BN}u, _cc = _fi % {BN}u;")
+            self._emit(f"    float {acc} = {c_tile.shared_name}[_fi];")
+            self._emit(f"    for (uint {kk} = 0; {kk} < {BK}u; {kk} += 4u) {{")
+            self._emit(f"        {acc} += dot(*((threadgroup float4*)&{a_tile.shared_name}[_cr * {BK}u + {kk}]), *((threadgroup float4*)&{b_src.shared_name}[_cc * {b_src.cols}u + {kk}]));")
+            self._emit("    }")
+            self._emit(f"    {c_tile.shared_name}[_fi] = {acc};")
+            self._emit("}")
+            self._emit(self.emitter.barrier())
+            return
+
+        if can_vec4 and not b_transposed and BN % 4 == 0:
+            C_VECS = C_ELEMS // 4
+            N_VECS = BN // 4
+            kk = self._fresh_var("dk4")
+            acc = self._fresh_var("acc4")
+            self._emit(f"for (uint _vi = (uint){tid}; _vi < {C_VECS}u; _vi += _tg_size.x) {{")
+            self._emit(f"    uint _cr = _vi / {N_VECS}u, _cc = (_vi % {N_VECS}u) * 4u;")
+            self._emit(f"    float4 {acc} = *((threadgroup float4*)&{c_tile.shared_name}[_cr * {BN}u + _cc]);")
+            self._emit(f"    for (uint {kk} = 0; {kk} < {BK}u; {kk}++) {{")
+            self._emit(f"        {acc} += (float){a_tile.shared_name}[_cr * {BK}u + {kk}] * *((threadgroup float4*)&{b_tile.shared_name}[{kk} * {BN}u + _cc]);")
+            self._emit("    }")
+            self._emit(f"    *((threadgroup float4*)&{c_tile.shared_name}[_cr * {BN}u + _cc]) = {acc};")
+            self._emit("}")
+            self._emit(self.emitter.barrier())
+            return
+
         kk = self._fresh_var("dk")
         a_elem = f"{a_tile.shared_name}[_cr * {BK}u + {kk}]"
         b_elem_kk = b_elem.format(kk=kk)
-        accum = f"{c_tile.shared_name}[_fi] += ({acc_type}){a_elem} * ({acc_type}){b_elem_kk};"
+        acc = self._fresh_var("acc")
 
         # Grid-stride loop for portability across GPU thread limits
         self._emit(f"for (uint _fi = (uint){tid}; _fi < {C_ELEMS}u; _fi += _tg_size.x) {{")
         self._emit(f"    uint _cr = _fi / {BN}u, _cc = _fi % {BN}u;")
+        self._emit(f"    {acc_type} {acc} = {c_tile.shared_name}[_fi];")
         self._emit(f"    for (uint {kk} = 0; {kk} < {BK}u; {kk}++) {{")
-        self._emit(f"        {accum}")
+        self._emit(f"        {acc} += ({acc_type}){a_elem} * ({acc_type}){b_elem_kk};")
         self._emit("    }")
+        self._emit(f"    {c_tile.shared_name}[_fi] = {acc};")
         self._emit("}")
         self._emit(self.emitter.barrier())
 

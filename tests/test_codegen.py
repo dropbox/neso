@@ -9,13 +9,18 @@ import pytest
 
 # Add the backend to the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from neso.backend.codegen import ttir_to_hlsl, ttir_to_hlsl_with_metadata, ttir_to_msl
+from neso.backend.codegen import (
+    ttir_to_hlsl,
+    ttir_to_hlsl_with_metadata,
+    ttir_to_msl,
+    ttir_to_msl_with_metadata,
+)
 from neso.backend.codegen.analysis import build_op_map, compute_liveness
 from neso.backend.codegen.hlsl_emitter import HLSLEmitter
 from neso.backend.codegen.ir import Op, TType
 from neso.backend.codegen.lowering import TritonLowering
 from neso.backend.codegen.mlir_walker import walk_module_from_text
-from neso.backend.codegen.model import UnsupportedOperationError
+from neso.backend.codegen.model import TileInfo, UnsupportedOperationError
 from neso.backend.codegen.msl_emitter import MSLEmitter
 
 # ---------------------------------------------------------------------------
@@ -141,6 +146,30 @@ def test_cast_barrier_deferred_until_intervening_tile_load():
     assert TritonLowering._find_deferred_cast_barriers([cast, dot, load]) == set()
 
 
+def test_scalar_metal_dot_uses_float4_register_accumulation():
+    lowering = TritonLowering(MSLEmitter(use_simdgroup=False), block_size=256)
+    a = TileInfo('_a', [8, 64], 'f32')
+    b_source = TileInfo('_b', [32, 64], 'f32')
+    b_transposed = TileInfo('_bt', [64, 32], 'f32', transposed_from=b_source)
+    c = TileInfo('_c', [8, 32], 'f32')
+
+    lowering._gen_dot_scalar_tile(a, b_transposed, c, 'float', 'float', 8, 32, 64)
+    source = '\n'.join(lowering.lines)
+    assert 'float4' in source
+    assert 'dot(' in source
+    assert 'threadgroup float4' in source
+    assert MSLEmitter(use_simdgroup=False).supports_wave_reduce()
+
+    lowering = TritonLowering(MSLEmitter(use_simdgroup=False), block_size=256)
+    a = TileInfo('_a', [8, 32], 'f32')
+    b = TileInfo('_b', [32, 64], 'f32')
+    c = TileInfo('_c', [8, 64], 'f32')
+    lowering._gen_dot_scalar_tile(a, b, c, 'float', 'float', 8, 64, 32)
+    source = '\n'.join(lowering.lines)
+    assert 'float4' in source
+    assert '(_vi % 16u) * 4u' in source
+
+
 def test_add_kernel():
     """Test MSL generation for vector addition."""
     msl, name = ttir_to_msl(ADD_KERNEL_TTIR)
@@ -234,6 +263,39 @@ def test_hlsl_generation_still_uses_shared_lowering():
 
     with pytest.raises(ValueError, match="wave_size must be one of"):
         ttir_to_hlsl(ADD_KERNEL_TTIR, wave_size=24)
+
+
+def test_msl_grid_stride_mask_uses_virtual_lane_index():
+    msl, _, _, _ = ttir_to_msl_with_metadata(
+        SAXPY_KERNEL_TTIR,
+        block_size=1024,
+        use_simdgroup=False,
+        max_threads=416,
+    )
+    assert "threadgroup bool" in msl
+    assert "(_v3 + (int)_fi) < arg3" in msl
+    assert "bool _cmp" not in msl
+
+    native_msl, _, _, _ = ttir_to_msl_with_metadata(
+        SAXPY_KERNEL_TTIR,
+        block_size=256,
+        use_simdgroup=True,
+    )
+    assert "bool _cmp" in native_msl
+
+
+def test_msl_nosimd_uses_runtime_simdgroup_geometry():
+    emitter = MSLEmitter(use_simdgroup=False)
+    signature = emitter.kernel_signature("kernel", [])
+
+    assert emitter.wave_lane_count_expr() == "_simd_width"
+    assert emitter.wave_lane_index_expr() == "_simd_lane"
+    assert emitter.wave_id_expr("_tid_in_tg.x") == "_simd_group"
+    assert emitter.wave_count_expr("_tg_size.x") == "_simd_count"
+    assert "thread_index_in_simdgroup" in signature
+    assert "simdgroup_index_in_threadgroup" in signature
+    assert "threads_per_simdgroup" in signature
+    assert "simdgroups_per_threadgroup" in signature
 
 
 @pytest.mark.parametrize("kind", ["si", "ui"])

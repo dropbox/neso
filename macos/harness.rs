@@ -4,6 +4,7 @@ mod macos_harness {
         create_command_buffer, Buffer, CommandQueue, CommandSemaphore, ComputePipeline, Device,
     };
     use candle_metal_kernels::RESOURCE_OPTIONS;
+    #[cfg(target_arch = "aarch64")]
     use half::f16;
     use objc2_metal::{MTLCommandBuffer, MTLSize};
     use std::error::Error;
@@ -21,6 +22,10 @@ mod macos_harness {
     const FA2_THREADS: usize = 512;
     #[cfg(target_arch = "x86_64")]
     const FA2_THREADS: usize = 416;
+    #[cfg(target_arch = "aarch64")]
+    const FA2_DTYPE: &str = "f16";
+    #[cfg(target_arch = "x86_64")]
+    const FA2_DTYPE: &str = "f32";
     const VECTOR_ADD_METALLIB: &[u8] = include_bytes!(concat!(
         env!("NESO_MACOS_KERNEL_DIR"),
         "/vector_add.metallib"
@@ -46,6 +51,7 @@ mod macos_harness {
         )?)
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn upload_f16(device: &Device, values: &[f32]) -> Result<Buffer, Box<dyn Error>> {
         let values: Vec<f16> = values.iter().copied().map(f16::from_f32).collect();
         Ok(device.new_buffer_with_data(
@@ -53,6 +59,26 @@ mod macos_harness {
             std::mem::size_of_val(values.as_slice()),
             RESOURCE_OPTIONS,
         )?)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn upload_fa2(device: &Device, values: &[f32]) -> Result<Buffer, Box<dyn Error>> {
+        upload_f16(device, values)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn upload_fa2(device: &Device, values: &[f32]) -> Result<Buffer, Box<dyn Error>> {
+        upload(device, values)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn fa2_input_value(value: f32) -> f32 {
+        f16::from_f32(value).to_f32()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn fa2_input_value(value: f32) -> f32 {
+        value
     }
 
     fn allocate(device: &Device, count: usize) -> Result<Buffer, Box<dyn Error>> {
@@ -217,9 +243,9 @@ mod macos_harness {
         let q = vec![0.0; fa2_count];
         let k = vec![0.0; fa2_count];
         let (_, _, v) = fa2_values(sequence_length);
-        let q_gpu = upload_f16(&device, &q)?;
-        let k_gpu = upload_f16(&device, &k)?;
-        let v_gpu = upload_f16(&device, &v)?;
+        let q_gpu = upload_fa2(&device, &q)?;
+        let k_gpu = upload_fa2(&device, &k)?;
+        let v_gpu = upload_fa2(&device, &v)?;
         let fa2_output = allocate(&device, fa2_count)?;
         dispatch_fa2(
             &queue,
@@ -233,7 +259,7 @@ mod macos_harness {
         let means: Vec<f32> = (0..FA2_HEAD_DIM)
             .map(|column| {
                 (0..sequence_length)
-                    .map(|row| f16::from_f32(v[row * FA2_HEAD_DIM + column]).to_f32())
+                    .map(|row| fa2_input_value(v[row * FA2_HEAD_DIM + column]))
                     .sum::<f32>()
                     / sequence_length as f32
             })
@@ -242,7 +268,7 @@ mod macos_harness {
             .flat_map(|_| means.iter().copied())
             .collect();
         check_close(&download(&fa2_output, fa2_count), &expected, 2e-3);
-        println!("PASS flash_attention_2 (f16, N={sequence_length}, d={FA2_HEAD_DIM})");
+        println!("PASS flash_attention_2 ({FA2_DTYPE}, N={sequence_length}, d={FA2_HEAD_DIM})");
         Ok(())
     }
 
@@ -319,9 +345,9 @@ mod macos_harness {
 
         let max_sequence_length = 2048;
         let (q, k, v) = fa2_values(max_sequence_length);
-        let q = upload_f16(&device, &q)?;
-        let k = upload_f16(&device, &k)?;
-        let v = upload_f16(&device, &v)?;
+        let q = upload_fa2(&device, &q)?;
+        let k = upload_fa2(&device, &k)?;
+        let v = upload_fa2(&device, &v)?;
         let fa2_output = allocate(&device, max_sequence_length * FA2_HEAD_DIM)?;
         for sequence_length in [128usize, 256, 512, 1024, 2048] {
             let fa2_time = measure(
@@ -330,7 +356,7 @@ mod macos_harness {
             )?;
             let flops = 4.0 * sequence_length as f64 * sequence_length as f64 * FA2_HEAD_DIM as f64;
             println!(
-                "flash_attn2 f16 N={sequence_length:4} d={FA2_HEAD_DIM}  {:8.3} ms  {:8.2} GFLOP/s",
+                "flash_attn2 {FA2_DTYPE} N={sequence_length:4} d={FA2_HEAD_DIM}  {:8.3} ms  {:8.2} GFLOP/s",
                 fa2_time.as_secs_f64() * 1e3,
                 flops / fa2_time.as_secs_f64() / 1e9
             );

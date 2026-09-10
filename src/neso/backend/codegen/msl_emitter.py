@@ -95,6 +95,10 @@ class MSLEmitter(CodeEmitter):
         params.append("    uint3 _tid_in_tg [[thread_position_in_threadgroup]]")
         params.append("    uint3 _tg_size [[threads_per_threadgroup]]")
         params.append("    uint3 _grid_size [[threadgroups_per_grid]]")
+        params.append("    uint _simd_lane [[thread_index_in_simdgroup]]")
+        params.append("    uint _simd_group [[simdgroup_index_in_threadgroup]]")
+        params.append("    uint _simd_width [[threads_per_simdgroup]]")
+        params.append("    uint _simd_count [[simdgroups_per_threadgroup]]")
         params_str = ',\n'.join(params)
         return f"kernel void {name}(\n{params_str}\n) {{"
 
@@ -179,10 +183,22 @@ class MSLEmitter(CodeEmitter):
     # --- Wave / subgroup intrinsics ---
 
     def supports_wave_reduce(self) -> bool:
-        return self.use_simdgroup
+        # Intel/older Metal GPUs lack simdgroup_matrix, but still support the
+        # subgroup arithmetic reductions used by softmax.
+        return True
 
     def wave_lane_count_expr(self) -> str:
-        return "32u"
+        return "32u" if self.use_simdgroup else "_simd_width"
 
     def wave_lane_index_expr(self) -> str:
-        return "((uint)_tid_in_tg.x % 32u)"
+        return "((uint)_tid_in_tg.x % 32u)" if self.use_simdgroup else "_simd_lane"
+
+    def wave_id_expr(self, thread_id: str) -> str:
+        if not self.use_simdgroup:
+            return "_simd_group"
+        return super().wave_id_expr(thread_id)
+
+    def wave_count_expr(self, thread_count: str) -> str:
+        if not self.use_simdgroup:
+            return "_simd_count"
+        return super().wave_count_expr(thread_count)

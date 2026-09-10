@@ -63,11 +63,15 @@ def main() -> None:
         ("simd", True, FA2_SIMD_BLOCK_M),
         ("scalar", False, FA2_SCALAR_BLOCK_M),
     ):
+        qkv_dtype = "f16" if use_simdgroup else "f32"
         ttir = generate_fa2_ttir(
-            block_m, FA2_BLOCK_N, FA2_HEAD_DIM, qkv_dtype="f16"
+            block_m, FA2_BLOCK_N, FA2_HEAD_DIM, qkv_dtype=qkv_dtype
         )
         msl, _, _, threads = ttir_to_msl_with_metadata(
-            ttir, block_size=block_m * FA2_BLOCK_N, use_simdgroup=use_simdgroup
+            ttir,
+            block_size=block_m * FA2_BLOCK_N,
+            use_simdgroup=use_simdgroup,
+            max_threads=0,
         )
         output = args.out / f"flash_attention_fwd_{variant}.metallib"
         write_if_changed(output, compile_msl(msl))
