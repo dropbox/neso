@@ -1,3 +1,32 @@
+# Introduction
+
+The majority of the world's GPU are not in data centers, but sitting mostly
+unutilized inside personal devices such as laptops or smartphones.
+Unfortunately, it is quite hard to program these GPUs, as they use
+platform-specific shader languages such as MSL or HLSL.  In the datacenter
+space, Triton has become popular because it allows writing advanced kernels
+like Flash Attention II in a high-devel DSL, and having a compiler specialize
+for the specific GPU family and capabilities.
+
+Neso (named after one of Neptune's moons, like Triton) aims to bridge this gap
+by providing a Triton backend that lowers Triton TTIR/TTGIR to MSL or HLSL, to
+make writing or porting performant GPU kernels for these platforms easier.  In
+reality, these kernels might still get written by agents, but using a shared
+high-level language should make code review easier and avoid unnecessary code
+duplication.
+
+For an example of a project using Neso for fast inference on MacOS and Windows,
+please see https://github.com/dropbox/nspeech . A future release of Witchcraft
+https://github.com/dropbox/witchcraft will also be based on Neso, which allows
+us to remove the dependency on OpenVINO that we currently use to get Windows
+platform support.
+
+Apart from the compiler backend, this repo also includes basic boilerplate for
+running GPU kernels on macOS and Windows. The boilerplate code depends on Rust
+and Huggingface's Candle framework, in a version that we have tweaked slightly
+to add Windows D3D12 support, see https://github.com/jacobgorm/candle . However,
+you can use Neso in your own projects without depending on Rust or Candle.
+
 # Neso AOT backend
 
 This package registers the `neso` backend with Triton and compiles Triton
